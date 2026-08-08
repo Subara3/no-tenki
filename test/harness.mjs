@@ -13,7 +13,8 @@ import { fileURLToPath } from 'node:url';
 
 import {
   EMOJI, cmpId, maxId, snowflakeFromMs, mask, normalizeText, truncate, BundleParseError,
-  dateKey, monthKey, reportHeaders, parseColumns, legacyColumns, parseIdPrefix, ConfigError
+  dateKey, monthKey, reportHeaders, parseColumns, legacyColumns, parseIdPrefix,
+  parseCategoryHints, ConfigError
 } from '../src/config.mjs';
 import {
   validateItem, groupByIdx, parseItemsJson, buildSystemPrompt
@@ -97,6 +98,61 @@ t('プロンプトに語彙が入る', sp.includes('目撃 / 実食 / 商品 / �
 t('notreport の受け皿は語彙の末尾', sp.includes('category は "その他"'), true);
 t('件数がプロンプトに入る', sp.includes('報告は 3 件') || sp.includes('3 件'), true);
 t('話題未指定なら業務報告が既定', buildSystemPrompt({ categories: ['a', 'b'] }, 1).includes('業務報告'), true);
+
+/* ---------- 4b-2. 抜き書き・種別の指示がプロンプトに載ること ---------- */
+// 実運用で踏んだ2つの事故を、プロンプトの文面として固定する。
+//   1. 「クレジットを表記してほしい」が「やめてほしい」と要約された（意味の反転）
+//   2. やること「ゲ制デーツイート」が「誤字」に分類された（近そうな語への寄せ）
+// どちらも構文的には正常な出力なので、実装側の検査では捕まらない。プロンプトで防ぐ。
+const neutral = buildSystemPrompt({ categories: ['バグ', '誤字', 'その他'] }, 2);
+t('要約ではなく抜き書きだと明示している', neutral.includes('要約ではなく抜き書き'), true);
+t('反対の意味にする誤りを例で示している', neutral.includes('意味が反対になっている'), true);
+t('述語に方向が乗ることを説明している', neutral.includes('述語に乗っています'), true);
+// 圧縮を促す語が残っていると、モデルは縮めようとして言い換える
+for (const w of ['言い換える', '要点', '80字']) {
+  t(`プロンプトに「${w}」が残っていない`, neutral.includes(w), false);
+}
+// 「指摘」＝問題の指摘。やること・依頼まで問題として読まれるので使わない
+t('プロンプトに「指摘」が残っていない', neutral.includes('指摘'), false);
+// 出力例の category を先頭固定にすると、先頭の語が既定という偏りを与える
+t('出力例の category を先頭固定にしない',
+  /"category":"バグ"[\s\S]*"category":"誤字"/.test(neutral), true);
+
+/* ---------- 4b-3. CATEGORY_HINTS（種別の語に意味を渡す） ---------- */
+const hintCfg = {
+  topic: 'やることと不具合', categories: ['バグ', '誤字', 'タスク', 'その他'],
+  categoryHints: { タスク: 'これからやる作業・予定', 誤字: '文字の誤り' }
+};
+const hinted = buildSystemPrompt(hintCfg, 2);
+t('CATEGORY_HINTS ありなら意味が入る', hinted.includes('タスク … これからやる作業・予定'), true);
+t('近そうな語に寄せるなという指示が入る', hinted.includes('意味の近そうな語に寄せない'), true);
+t('CATEGORY_HINTS 無しなら意味の節を出さない', neutral.includes('各語の意味'), false);
+t('CATEGORY_HINTS は キー:値 で読める',
+  parseCategoryHints('バグ:動作がおかしい,タスク:これからやる作業'),
+  { バグ: '動作がおかしい', タスク: 'これからやる作業' });
+
+/* ---------- 4b-4. 語彙が1つなら分類を聞かない ---------- */
+// 実ログを読んだ結論。あきらさんは「体験版データ」「ゲ制デーツイート」のような
+// 名詞だけを投げるし、「赤い水が…溜まるんですけど、サイトの攻略情報に足しておこう」
+// のように1文にバグとやることが同居する。本文からは種別が決まらない。
+// 語彙を減らしても解決しないので、決まらない現場では聞くのをやめる。
+const soloCfg = { topic: '報告', categories: ['不具合'], maxChars: 1000 };
+const solo = buildSystemPrompt(soloCfg, 2);
+t('語彙1つなら category を聞かない', solo.includes('- category:'), false);
+t('語彙1つなら出力例にも category を出さない', solo.includes('"category"'), false);
+t('語彙1つなら confidence は summary だけ', solo.includes('summary と category'), false);
+t('語彙1つでも抜き書きの指示は残る', solo.includes('要約ではなく抜き書き'), true);
+t('語彙1つでも notreport は残る', solo.includes('notreport'), true);
+// 語彙が2つ以上なら従来どおり聞く
+t('語彙2つ以上なら category を聞く',
+  buildSystemPrompt({ categories: ['バグ', '誤字'] }, 1).includes('- category:'), true);
+
+// 聞いていない以上、返ってこなくても「補完した」印は付けない（全行に付いてしまう）
+const soloReport = { idx: 1, text: '体験版データ', postedAt: '2026-08-08' };
+const soloItem = { idx: 1, summary: '体験版データ', confidence: 'high', missing: [] };
+const sv = validateItem(soloCfg, soloItem, soloReport, [soloReport]);
+t('語彙1つなら種別は黙って埋まる', sv.category, '不具合');
+t('語彙1つなら種別補完の印は付かない', sv.state, 'ok');
 
 /* ---------- 4c. FIELDS（集める対象に固有の列） ---------- */
 // 「ゲームに出てくるサーモン」を集めるなら、列は種別・数値ではなく ゲーム・サーモン。

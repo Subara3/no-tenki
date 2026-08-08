@@ -25,6 +25,10 @@ function log(...a) { console.log(...a); }
  */
 function entrySource() {
   const ev = process.env.GITHUB_EVENT_NAME;
+  // 定期実行。ここを落としていたせいで、Actions 上の schedule が
+  // 全部 "cli" として記録されていた。実際には8割がこの経路だったのに、
+  // 使用量シートを見ても分からない状態になっていた。
+  if (ev === 'schedule') return 'schedule';
   if (ev === 'workflow_dispatch') return 'manual';
   if (ev === 'repository_dispatch') {
     // シート側が client_payload.source に "sheet"（onOpen）か "link"（ピン留め）を入れてくる
@@ -35,7 +39,8 @@ function entrySource() {
     } catch { /* 読めなければ下の既定へ */ }
     return 'dispatch';
   }
-  return 'cli';
+  // 知らないイベントは名前をそのまま残す。"cli" は手元で直接動かしたときだけ。
+  return ev || 'cli';
 }
 
 async function main() {

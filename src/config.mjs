@@ -65,6 +65,8 @@ export function loadConfig(env = process.env) {
     // さくらに追加で抽出させる項目は、列定義から導く
     fields: columns.filter((c) => c.source === 'field').map((c) => c.name),
     idPrefix: parseIdPrefix(env.ID_PREFIX),
+    // 種別の語に意味を添える。未設定ならプロンプトにその節ごと出さない。
+    categoryHints: parseCategoryHints(env.CATEGORY_HINTS),
     versionChannelId: env.VERSION_CHANNEL_ID || '',
     sheetTab: env.SHEET_TAB || '',
     // 既にある表の書式（ドロップダウンなど）を、追記する行にも写すための指定。
@@ -177,15 +179,30 @@ export function reportHeaders(cfg) {
   return cfg.columns.map((c) => c.name);
 }
 
-/** `要望:R,*:B` の形を解く。`*` は既定。 */
-export function parseIdPrefix(raw) {
+/** `キー:値,キー:値` を解く。値にコロンが入りうるので最後のコロンで割る。 */
+export function parsePairs(raw) {
   const map = {};
   String(raw || '').split(',').map((s) => s.trim()).filter(Boolean).forEach((pair) => {
     const i = pair.lastIndexOf(':');
     if (i < 0) return;
-    map[pair.slice(0, i).trim()] = pair.slice(i + 1).trim();
+    const key = pair.slice(0, i).trim();
+    if (!key) return;
+    map[key] = pair.slice(i + 1).trim();
   });
   return map;
+}
+
+/** `要望:R,*:B` の形を解く。`*` は既定。 */
+export function parseIdPrefix(raw) {
+  return parsePairs(raw);
+}
+
+/**
+ * `バグ:動作がおかしい,タスク:これからやる作業` の形を解く。
+ * 種別の語だけを並べるとモデルは語感で判断する。意味を渡して誤配を減らす。
+ */
+export function parseCategoryHints(raw) {
+  return parsePairs(raw);
 }
 
 /* ------------------------------------------------------------------ */
