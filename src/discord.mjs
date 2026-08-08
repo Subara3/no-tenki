@@ -133,6 +133,11 @@ export function alreadyHandled(msg) {
   return false;
 }
 
+/** 自分がその絵文字を付けているか。残った ❓ を掃除する判断に使う。 */
+export function hasOwnReaction(msg, emoji) {
+  return (msg.reactions || []).some((r) => r.me && (r.emoji?.name || '') === emoji);
+}
+
 /**
  * リアクションを付ける。⚠️ は環境により VS16 付き／無しで受け付けが割れるため
  * 400 が返ったら異体字セレクタ無しで1回だけやり直す。

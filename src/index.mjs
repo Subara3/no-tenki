@@ -7,7 +7,7 @@
 
 import fs from 'node:fs';
 import { loadConfig, ConfigError, EMOJI, maxId, dateKey, monthKey, normalizeText, truncate, mask, reportHeaders } from './config.mjs';
-import { fetchMessagesAfter, classifyMessage, alreadyHandled, addReaction, removeReaction, fetchMessageById, messageLink, authorName, resolveIdentity, fetchLatestMessageId, sleep, attachmentUrls } from './discord.mjs';
+import { fetchMessagesAfter, classifyMessage, alreadyHandled, addReaction, removeReaction, hasOwnReaction, fetchMessageById, messageLink, authorName, resolveIdentity, fetchLatestMessageId, sleep, attachmentUrls } from './discord.mjs';
 import { buildVersionTimeline, versionAt } from './version.mjs';
 import { extractBundle, validateItem, groupByIdx } from './sakura.mjs';
 import { loadState, saveState, rollMonth, budgetStatus, consumeOne, advanceCursor, pendingHoldIds, updateHolds, HOLD_MAX_ATTEMPTS } from './state.mjs';
@@ -220,9 +220,12 @@ async function main() {
   const settled = inBatch.filter((id) => !heldNow.has(id));
   const { giveUp } = updateHolds(state, [...heldNow], settled);
 
+  // 決着した投稿に ❓ が残っていたら外す。再試行経路に限らない
+  // （カーソルを戻して回収した場合も ❓ が残る）。付いているものだけ叩く。
   for (const b of batch) {
     const id = String(b.msg.id);
-    if (!b.retried || heldNow.has(id)) continue;
+    if (heldNow.has(id)) continue;
+    if (!hasOwnReaction(b.msg, EMOJI.HOLD)) continue;
     await removeReaction(cfg, id, EMOJI.HOLD);
     await sleep(300);
   }
@@ -264,6 +267,17 @@ async function collectHolds(cfg, state) {
     if (!msg) { drop.push(id); continue; }          // 消された
     const c = classifyMessage(cfg, msg);
     if (!c.target) { drop.push(id); continue; }     // 対象外に変わった
+
+    // すでに ✅／⚠️ が付いている＝別の経路で決着している。
+    // もう一度渡すと同じ投稿で行が二重になる。残った ❓ だけ外して台帳から下ろす。
+    if (alreadyHandled(msg)) {
+      drop.push(id);
+      if (hasOwnReaction(msg, EMOJI.HOLD)) {
+        await removeReaction(cfg, id, EMOJI.HOLD);
+        await sleep(300);
+      }
+      continue;
+    }
     out.push({ msg, body: c.body, attachmentOnly: !!c.attachmentOnly });
   }
   if (drop.length) updateHolds(state, [], drop);

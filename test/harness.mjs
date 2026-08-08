@@ -19,7 +19,7 @@ import {
   validateItem, groupByIdx, parseItemsJson, buildSystemPrompt
 } from '../src/sakura.mjs';
 import {
-  classifyMessage, alreadyHandled, authorName, stripNoise, attachmentUrls
+  classifyMessage, alreadyHandled, authorName, stripNoise, attachmentUrls, hasOwnReaction
 } from '../src/discord.mjs';
 import { timelineFromMessages, versionAt } from '../src/version.mjs';
 import { pendingHoldIds, updateHolds, HOLD_MAX_ATTEMPTS } from '../src/state.mjs';
@@ -264,6 +264,9 @@ t('RAW(VS16なし)も処理済み扱い', alreadyHandled({ reactions: [{ me: tru
 t('HOLDは未処理扱い（再処理させる）', alreadyHandled({ reactions: [{ me: true, emoji: { name: EMOJI.HOLD } }] }), false);
 t('他人のリアクションは無視', alreadyHandled({ reactions: [{ me: false, emoji: { name: EMOJI.OK } }] }), false);
 t('リアクション無しは未処理', alreadyHandled({}), false);
+t('自分の❓を見つける', hasOwnReaction({ reactions: [{ me: true, emoji: { name: EMOJI.HOLD } }] }, EMOJI.HOLD), true);
+t('他人の❓は外す対象にしない', hasOwnReaction({ reactions: [{ me: false, emoji: { name: EMOJI.HOLD } }] }, EMOJI.HOLD), false);
+t('❓が無ければ外しに行かない', hasOwnReaction({ reactions: [{ me: true, emoji: { name: EMOJI.OK } }] }, EMOJI.HOLD), false);
 
 /* ---------- 12. 表示名 ---------- */
 t('ニックネーム優先', authorName({ member: { nick: 'ニック' }, author: { username: 'hana' } }), 'ニック');
