@@ -7,10 +7,10 @@
 
 import fs from 'node:fs';
 import { loadConfig, ConfigError, EMOJI, maxId, dateKey, monthKey, normalizeText, truncate, mask, reportHeaders } from './config.mjs';
-import { fetchMessagesAfter, classifyMessage, alreadyHandled, addReaction, messageLink, authorName, resolveIdentity, fetchLatestMessageId, sleep, attachmentUrls } from './discord.mjs';
+import { fetchMessagesAfter, classifyMessage, alreadyHandled, addReaction, removeReaction, fetchMessageById, messageLink, authorName, resolveIdentity, fetchLatestMessageId, sleep, attachmentUrls } from './discord.mjs';
 import { buildVersionTimeline, versionAt } from './version.mjs';
 import { extractBundle, validateItem, groupByIdx } from './sakura.mjs';
-import { loadState, saveState, rollMonth, budgetStatus, consumeOne, advanceCursor } from './state.mjs';
+import { loadState, saveState, rollMonth, budgetStatus, consumeOne, advanceCursor, pendingHoldIds, updateHolds, HOLD_MAX_ATTEMPTS } from './state.mjs';
 import { pushToSheet } from './sink.mjs';
 
 const args = new Set(process.argv.slice(2));
@@ -60,20 +60,33 @@ async function main() {
     return;
   }
 
+  // 保留（❓）はカーソルが追い越すので、ID を指定して呼び戻す。
+  // これが無いと、語彙や設定を直しても過去の保留は永久に拾われない。
+  const retried = await collectHolds(cfg, state);
+
   const fetched = await fetchMessagesAfter(cfg, state.lastMessageId, 100);
-  if (!fetched.length) {
+  if (!fetched.length && !retried.length) {
     log('新着はありませんでした。');
     saveState(state);
     return;
   }
 
-  const targets = [];
+  // 保留の再試行を先に置く。束ね上限に押し出されて先送りになり続けるのを避ける。
+  const targets = retried.map(({ msg, body, attachmentOnly }) => ({
+    pos: null, msg, body, attachmentOnly, retried: true
+  }));
+  // 再試行で拾った投稿がカーソルより後ろにも居ることがある（前回カーソルが進まなかった場合）。
+  // 両方から入れると同じ投稿で2行できるので、ここで弾く。
+  const retriedIds = new Set(retried.map(({ msg }) => String(msg.id)));
   fetched.forEach((m, pos) => {
+    if (retriedIds.has(String(m.id))) return;
     const c = classifyMessage(cfg, m);
     if (!c.target) return;
     if (alreadyHandled(m)) return;
-    targets.push({ pos, msg: m, body: c.body, attachmentOnly: !!c.attachmentOnly });
+    targets.push({ pos, msg: m, body: c.body, attachmentOnly: !!c.attachmentOnly, retried: false });
   });
+
+  if (retried.length) log(`保留の再試行 ${retried.length}件を対象に戻しました。`);
 
   if (!targets.length) {
     // 対象ゼロでも読み終わった区間ぶんカーソルは進める。
@@ -198,9 +211,33 @@ async function main() {
     await sleep(300);   // 1リクエスト/250ms の絞りに合わせる
   }
 
+  // 保留の台帳を更新する。
+  // ❓ が付いたまま解決した投稿は ❓ を外す（残すと「未解決」に見え続ける）。
+  const heldNow = new Set(
+    outcome.reactions.filter((r) => r.emoji === EMOJI.HOLD).map((r) => String(r.messageId))
+  );
+  const inBatch = batch.map((b) => String(b.msg.id));
+  const settled = inBatch.filter((id) => !heldNow.has(id));
+  const { giveUp } = updateHolds(state, [...heldNow], settled);
+
+  for (const b of batch) {
+    const id = String(b.msg.id);
+    if (!b.retried || heldNow.has(id)) continue;
+    await removeReaction(cfg, id, EMOJI.HOLD);
+    await sleep(300);
+  }
+
+  for (const id of giveUp) {
+    log(`❓ のまま ${HOLD_MAX_ATTEMPTS} 回試したので再試行をやめます: ${messageLink(cfg, id)}`);
+  }
+
   // カーソルは「処理し終えた最後のメッセージ」まで。
   // 取得した全件の最大IDまで進めると、束ね上限を超えたぶんを読み飛ばす。
-  advanceCursor(state, fetched[batch[batch.length - 1].pos].id, maxId);
+  // 再試行ぶん（pos が null）はカーソルの外側にいるので数に入れない。
+  const advanced = batch.filter((b) => b.pos !== null);
+  if (advanced.length) {
+    advanceCursor(state, fetched[advanced[advanced.length - 1].pos].id, maxId);
+  }
   saveState(state);
 
   log(`投稿${entries.length}件 → ${outcome.counts.rows}行：` +
@@ -209,6 +246,28 @@ async function main() {
     (imageOnly.length ? `（うち添付のみ ${imageOnly.length}件）` : ''));
   if (carriedOver > 0) log(`他に ${carriedOver} 件残っています。次回の実行で続きを取り込みます。`);
   log(`今月の消費: ${state.monthCount}/${cfg.monthlyLimit}`);
+}
+
+/**
+ * 台帳に載っている保留を ID 指定で取り直す。
+ * 消えた投稿・対象外になった投稿は台帳から落とす（永久に追いかけない）。
+ * @returns {Promise<Array<{msg:object, body:string, attachmentOnly:boolean}>>}
+ */
+async function collectHolds(cfg, state) {
+  const ids = pendingHoldIds(state);
+  if (!ids.length) return [];
+
+  const out = [];
+  const drop = [];
+  for (const id of ids) {
+    const msg = await fetchMessageById(cfg, id);
+    if (!msg) { drop.push(id); continue; }          // 消された
+    const c = classifyMessage(cfg, msg);
+    if (!c.target) { drop.push(id); continue; }     // 対象外に変わった
+    out.push({ msg, body: c.body, attachmentOnly: !!c.attachmentOnly });
+  }
+  if (drop.length) updateHolds(state, [], drop);
+  return out;
 }
 
 // ok/hold/raw/skip は投稿の数、rows は作られた行の数。
@@ -301,6 +360,9 @@ function dispatch(cfg, reports, bundle) {
       reactions.push({ messageId: r.messageId, emoji: EMOJI.HOLD });
     } else {
       counts.skip += 1;   // 行も作らず、リアクションも付けない
+      // 「見送った」ことは残す。リアクションも行も無いので、
+      // ここに書かないと判断そのものが追えなくなる（拾えていない事故と区別が付かない）。
+      errorRows.push([null, '見送り', r.messageId, '報告以外と判定', truncate(r.text, 300), messageLink(cfg, r.messageId)]);
     }
   }
   return { reportRows, errorRows, reactions, counts };

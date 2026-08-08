@@ -17,8 +17,14 @@ const EMPTY = {
   lastMessageId: '',
   monthKey: '',
   monthCount: 0,
+  // 保留（❓）になった投稿の再試行台帳。{ メッセージID: 試した回数 }
+  // カーソルは保留を追い越すので、これが無いと二度と拾われない。
+  holds: {},
   updatedAt: ''
 };
+
+/** 保留を何回まで試すか。無条件に試し続けるとさくらの枠を毎回1つ溶かす。 */
+export const HOLD_MAX_ATTEMPTS = 3;
 
 export function loadState() {
   let raw;
@@ -76,6 +82,41 @@ export function consumeOne(state, cfg) {
   if (st.exhausted) return false;
   state.monthCount = st.used + 1;
   return true;
+}
+
+/**
+ * 再試行の対象になっている保留の ID を古い順で返す。
+ * 上限に達したものは呼び出し側で諦めさせる（ここでは落とさない）。
+ */
+export function pendingHoldIds(state) {
+  const holds = state.holds && typeof state.holds === 'object' ? state.holds : {};
+  return Object.keys(holds).sort((a, b) => (a.length - b.length) || (a < b ? -1 : a > b ? 1 : 0));
+}
+
+/**
+ * 取り込みの結果を台帳に反映する。
+ * @param {object} state
+ * @param {string[]} heldIds     今回 ❓ になった投稿
+ * @param {string[]} settledIds  今回 ✅／⚠️／見送りで決着した投稿
+ * @returns {{giveUp: string[]}} 上限に達して諦めた ID
+ */
+export function updateHolds(state, heldIds, settledIds) {
+  if (!state.holds || typeof state.holds !== 'object') state.holds = {};
+  const giveUp = [];
+
+  for (const id of settledIds) delete state.holds[String(id)];
+
+  for (const id of heldIds) {
+    const key = String(id);
+    const n = (Number(state.holds[key]) || 0) + 1;
+    if (n >= HOLD_MAX_ATTEMPTS) {
+      delete state.holds[key];
+      giveUp.push(key);
+    } else {
+      state.holds[key] = n;
+    }
+  }
+  return { giveUp };
 }
 
 /** カーソルは巻き戻さない。必ず大きい方を採る。 */

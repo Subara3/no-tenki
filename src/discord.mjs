@@ -184,6 +184,32 @@ export async function resolveIdentity(cfg) {
   return { botUserId: cfg.botUserId, guildId: cfg.guildId, botName: me.json.username };
 }
 
+/**
+ * ID を指定して1件だけ取り直す。
+ * カーソルが追い越してしまった保留（❓）を呼び戻すために使う。
+ * 消されていれば null（消えた投稿を追い続けない）。
+ */
+export async function fetchMessageById(cfg, messageId) {
+  const res = await discordFetch(cfg, 'GET', `/channels/${cfg.channelId}/messages/${messageId}`);
+  if (res.code === 404) return null;
+  if (res.code !== 200 || !res.json) return null;
+  return res.json;
+}
+
+/**
+ * 自分が付けたリアクションを外す。
+ * 保留が解決したときに ❓ を残さないため。権限は追加分だけで足りる（自分の分の削除）。
+ * 外せなくても取り込みは続ける（見た目の問題であって記録は済んでいる）。
+ */
+export async function removeReaction(cfg, messageId, emoji) {
+  const res = await discordFetch(
+    cfg, 'DELETE',
+    `/channels/${cfg.channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/@me`
+  );
+  if (res.code === 204 || res.code === 200 || res.code === 404) return { ok: true };
+  return { ok: false, code: res.code, body: mask(truncate(res.body, 200)) };
+}
+
 /** チャンネルの最新メッセージ ID（カーソル初期化用）。無ければ '0'。 */
 export async function fetchLatestMessageId(cfg) {
   const res = await discordFetch(cfg, 'GET', `/channels/${cfg.channelId}/messages?limit=1`);

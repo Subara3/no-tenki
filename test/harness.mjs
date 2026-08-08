@@ -22,6 +22,7 @@ import {
   classifyMessage, alreadyHandled, authorName, stripNoise, attachmentUrls
 } from '../src/discord.mjs';
 import { timelineFromMessages, versionAt } from '../src/version.mjs';
+import { pendingHoldIds, updateHolds, HOLD_MAX_ATTEMPTS } from '../src/state.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -267,6 +268,31 @@ t('リアクション無しは未処理', alreadyHandled({}), false);
 /* ---------- 12. 表示名 ---------- */
 t('ニックネーム優先', authorName({ member: { nick: 'ニック' }, author: { username: 'hana' } }), 'ニック');
 t('global_nameを次点で使う', authorName({ author: { username: 'hana', global_name: 'Hana' } }), 'Hana');
+
+/* ---------- 13. 保留の再試行台帳 ---------- */
+{
+  const s = { holds: {} };
+  updateHolds(s, ['100', '200'], []);
+  t('保留は台帳に載る', s.holds, { 100: 1, 200: 1 });
+
+  updateHolds(s, ['100'], ['200']);
+  t('決着した投稿は台帳から消える', s.holds, { 100: 2 });
+
+  const r = updateHolds(s, ['100'], []);
+  t(`${HOLD_MAX_ATTEMPTS}回で諦める`, r.giveUp, ['100']);
+  t('諦めた投稿は台帳に残らない', s.holds, {});
+
+  // 諦めたぶんを黙って消さないことが要件。giveUp が空なら呼び出し側は何も言えない。
+  t('諦めていないときは giveUp が空', updateHolds({ holds: {} }, ['9'], []).giveUp, []);
+
+  // ID は 2^53 を超えるので数値化してはいけない。桁数→辞書順で古い順になる。
+  // キーを引用符で囲むのは必須。裸の数値リテラルだと ...621 が ...500 に丸められる。
+  // state.json 経由なら JSON のキーは必ず文字列なので、実装側でこの丸めは起きない。
+  t('保留IDは古い順（桁数優先）',
+    pendingHoldIds({ holds: { '1535510918010769470': 1, '999': 1, '1535308220212715621': 1 } }),
+    ['999', '1535308220212715621', '1535510918010769470']);
+  t('台帳が無くても落ちない', pendingHoldIds({}), []);
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
