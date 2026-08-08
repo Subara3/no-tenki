@@ -1,0 +1,12 @@
+# 公開しないもの置き場。
+# 相手の未公開作品の不具合内容や参加者のハンドル名は、ここから外に出さない。
+local/
+
+# 秘密は絶対にリポジトリへ入れない。GitHub Secrets にだけ置く。
+.clasp.json
+.clasprc.json
+.env
+.env.*
+secrets*
+*.local.*
+node_modules/

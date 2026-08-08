@@ -1,0 +1,51 @@
+name: probe
+
+# Step 0：GitHub Actions のランナーから Discord REST が通るかだけを測る。
+# 公開リポジトリなのでログは誰でも読める。報告本文は1文字も出さない。
+# 出すのは HTTP ステータス・レート制限ヘッダの有無・応答のバイト数だけ。
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Discord REST reachability
+        env:
+          T: ${{ secrets.DISCORD_BOT_TOKEN }}
+          CH: ${{ secrets.CHANNEL_ID }}
+        run: |
+          UA='DiscordBot (https://github.com/Subara3/no-tenki, 4.0)'
+
+          probe() {
+            local label="$1" url="$2"
+            code=$(curl -sS -o /tmp/body -D /tmp/head -w '%{http_code}' \
+              -H "Authorization: Bot $T" -H "User-Agent: $UA" "$url")
+            echo "● $label → HTTP $code"
+            if grep -qi '^x-ratelimit' /tmp/head; then
+              echo "    x-ratelimit-* あり（Discord本体に到達）"
+              grep -i '^x-ratelimit-limit' /tmp/head | tr -d '\r' | sed 's/^/    /'
+            else
+              echo "    x-ratelimit-* なし（エッジで遮断された可能性）"
+            fi
+            echo "    応答バイト数: $(wc -c < /tmp/body)"
+            if [ "$code" != "200" ]; then
+              echo "    エラー本文: $(head -c 200 /tmp/body)"
+            fi
+          }
+
+          probe '基準 /users/@me'            "https://discord.com/api/v10/users/@me"
+          probe '本命 /channels/{ch}/messages' "https://discord.com/api/v10/channels/$CH/messages?limit=1"
+
+          # 判定（本文は出さない）
+          code=$(curl -sS -o /tmp/final -w '%{http_code}' \
+            -H "Authorization: Bot $T" -H "User-Agent: $UA" \
+            "https://discord.com/api/v10/channels/$CH/messages?limit=1")
+          echo ""
+          if [ "$code" = "200" ]; then
+            echo "RESULT: PASS — Actions から Discord のメッセージが読める"
+          else
+            echo "RESULT: FAIL — HTTP $code"
+            exit 1
+          fi

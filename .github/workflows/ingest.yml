@@ -1,0 +1,97 @@
+name: ingest
+
+# No転記の取り込み。
+# 公開リポジトリなのでログは誰でも読める。報告本文・報告者名・要約は一切出さない。
+# 出力するのは件数と内訳だけ（3件処理：✅2 ❓1）。
+#
+# マーケットプレイスのアクションを使わない。
+# actions/checkout も actions/setup-node も使わず、git と同梱の Node だけで動かす。
+# 配布物として外部依存が無くなり、アクション配布側の障害にも巻き込まれない。
+
+# 入口は3つ。
+#   1. 定期実行（30分ごと）… 誰も押さない
+#   2. Discordのピン留めリンク／シートを開いたとき … Apps Script が repository_dispatch を投げる
+#   3. 手動実行 … デバッグ用
+#
+# 対象が0件ならさくらを呼ばないので、静かな時間帯に定期実行が回っても消費は増えない。
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  repository_dispatch:
+    types: [no-tenki-ingest]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'さくらを呼ばずに対象件数だけ確認する'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+# 同時実行を禁止する（v3 の LockService に相当）。カーソルの二重更新を防ぐ。
+concurrency:
+  group: no-tenki-ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    env:
+      REPO_URL: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+    steps:
+      - name: 取得
+        run: |
+          git clone --depth 1 --branch "$GITHUB_REF_NAME" "$REPO_URL" .
+          node --version
+
+      - name: 取り込み
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          SAKURA_API_KEY: ${{ secrets.SAKURA_API_KEY }}
+          CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
+          SHEET_WEBAPP_URL: ${{ secrets.SHEET_WEBAPP_URL }}
+          SHEET_SECRET: ${{ secrets.SHEET_SECRET }}
+          TOPIC: ${{ vars.TOPIC }}
+          CATEGORIES: ${{ vars.CATEGORIES }}
+          # 列の定義。COLUMNS があればそれが優先、無ければ FIELDS から従来の並びを組む
+          COLUMNS: ${{ vars.COLUMNS }}
+          FIELDS: ${{ vars.FIELDS }}
+          ID_PREFIX: ${{ vars.ID_PREFIX }}
+          SHEET_TAB: ${{ vars.SHEET_TAB }}
+          # 既存の表の書式（ステータスのドロップダウンなど）を追記行にも写す
+          MIMIC_FROM_TAB: ${{ vars.MIMIC_FROM_TAB }}
+          MIMIC_COLUMNS: ${{ vars.MIMIC_COLUMNS }}
+          COLUMN_DEFAULTS: ${{ vars.COLUMN_DEFAULTS }}
+          # バージョンの告知チャンネル。設定すると発生Ver を投稿時刻から自動で決める
+          VERSION_CHANNEL_ID: ${{ vars.VERSION_CHANNEL_ID }}
+          MODEL: ${{ vars.MODEL }}
+          REQUIRE_MENTION: ${{ vars.REQUIRE_MENTION }}
+          MONTHLY_LIMIT: ${{ vars.MONTHLY_LIMIT }}
+          MAX_BATCH: ${{ vars.MAX_BATCH }}
+          TIMEZONE: ${{ vars.TIMEZONE }}
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            node src/index.mjs --dry-run
+          else
+            node src/index.mjs
+          fi
+
+      - name: カーソルを保存
+        if: always()
+        run: |
+          if git diff --quiet -- state.json; then
+            echo "状態に変化なし"
+            exit 0
+          fi
+          git config user.name  "no-tenki"
+          git config user.email "no-tenki@users.noreply.github.com"
+          git add state.json
+          git commit -m "state: カーソルを更新"
+          # 定期実行が重なった場合に備えて、押し戻されたら取り込み直して再送する
+          for i in 1 2 3; do
+            git push "$REPO_URL" "HEAD:$GITHUB_REF_NAME" && exit 0
+            git pull --rebase --autostash "$REPO_URL" "$GITHUB_REF_NAME" || true
+          done
+          echo "state.json の push に失敗しました" >&2
+          exit 1
