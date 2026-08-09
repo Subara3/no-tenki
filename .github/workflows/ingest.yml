@@ -54,6 +54,8 @@ jobs:
           SHEET_SECRET: ${{ secrets.SHEET_SECRET }}
           TOPIC: ${{ vars.TOPIC }}
           CATEGORIES: ${{ vars.CATEGORIES }}
+          # 種別の語に意味を添える。語を並べるだけだとモデルが語感で判断する
+          CATEGORY_HINTS: ${{ vars.CATEGORY_HINTS }}
           # 列の定義。COLUMNS があればそれが優先、無ければ FIELDS から従来の並びを組む
           COLUMNS: ${{ vars.COLUMNS }}
           FIELDS: ${{ vars.FIELDS }}
